@@ -1,7 +1,6 @@
 import logging
 import os
 import sys
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import typer
@@ -26,7 +25,6 @@ streamHandler.setFormatter(formatter)
 # 4. Add the new streamHandler to the ipfabric logger.
 ipfabricLogger.addHandler(streamHandler)
 
-# Get Current Path
 # Get Current Path
 CURRENT_FOLDER = Path(os.path.realpath(os.path.dirname(__file__)))
 # testing only: CURRENT_FOLDER = Path(os.path.realpath(os.path.curdir)).resolve()
@@ -94,6 +92,31 @@ def main(
         5, "--timeout", "-t", help="Timeout to download the Snapshot"
     ),
 ):
+    """
+    Move a snapshot from one IPF server to another.
+
+    Args:
+        snapshot_src (str): Snapshot ID to move.
+        server_src (str): IPF Server Source.
+        token_src (str): API Token for Server Source.
+        server_dst (str): IPF Server Destination.
+        token_dst (str): Token for Server Destination.
+        keep_dl_file (bool): Keep the Downloaded Snapshot.
+        timeout_dl (int): Timeout to download the Snapshot.
+
+    Returns:
+        None
+
+    Raises:
+        None
+
+    Examples:
+        # Take the last snapshot from the source server, download it and upload it to the destination server
+        python ipf-mv-snap.py -src https://ipfabric.source-server -api-src <api-src-token> -dst https://ipfabric.dst-server -api-dst <api-dst-token>
+        
+        # Take the specified snapshot from the source server, download it and upload it to the destination server
+        python ipf-mv-snap.py -src https://ipfabric.source-server -api-src <api-src-token> -s <snapshot-id> -dst https://ipfabric.dst-server -api-dst <api-dst-token>
+    """
     ipf_download = IPFClient(base_url=server_src, auth=token_src, verify=False)
     snapshot = [
         snap
