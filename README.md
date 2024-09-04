@@ -1,4 +1,4 @@
-# IP Fabric Snapshot Mover 🚚
+# IP Fabric Snapshot Copier  🚚
 
 A Python script to copy snapshots between IP Fabric servers.
 
@@ -38,19 +38,19 @@ The script uses the following environment variables, which should be defined in 
 - Copy the last snapshot:
 
     ```shell
-    python copy-snapshot.py
+    python3 copy-snapshot.py
     ```
 
 - Copy a specified snapshot (including unloaded snapshot)
 
     ```shell
-    python copy-snapshot.py -s <snapshot-id>
+    python3 copy-snapshot.py -s <snapshot-id>
     ```
 
 - Without the Environment variables specified in the .env file:
 
     ```shell
-    python copy-snapshot.py -src https://ipfabric.source-server -api-src <api-src-token> -dst https://ipfabric.dst-server -api-dst <api-dst-token> -s <snapshot-id>
+    python3 copy-snapshot.py -src https://ipfabric.source-server -api-src <api-src-token> -dst https://ipfabric.dst-server -api-dst <api-dst-token> -s <snapshot-id>
     ```
 
 ## Logging
