@@ -1,10 +1,11 @@
 import ast
 import os
+import sys
+import time
 from pathlib import Path
 
-import typer
-import sys
 import httpx
+import typer
 from dotenv import find_dotenv, load_dotenv
 from ipfabric import IPFClient
 from loguru import logger
@@ -17,7 +18,13 @@ load_dotenv(find_dotenv(), override=True)
 JOB_CHECK_LOOP = 60
 DEFAULT_TIMEOUT = 5
 LOG_FILE = CURRENT_FOLDER / "logs/ipf-mv-snap.log"
-LOGGER_FORMAT = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <yellow><italic>{elapsed}</italic></yellow> | <level>{level: <8}</level> | <level>{message}</level>"
+LOGGER_FORMAT = (
+    "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
+    "<yellow><italic>{elapsed}</italic></yellow> | "
+    "<level>{level: <8}</level> | <level>{message}</level>"
+)
+HTTP_400_STATUS = 400
+
 
 logger.remove()
 logger.add(
@@ -60,9 +67,7 @@ def parse_auth(auth):
 
 
 def snap_upload(server_dst: str, filename: str, api_token: str):
-    """
-    Upload a snapshot to an IPF server.
-    """
+    """Upload a snapshot to an IPF server."""
     # Prepare the file to be uploaded
     file_data = {"file": (Path(filename).name, open(filename, "rb"), "application/x-tar")}
     headers = {"x-api-token": api_token}
@@ -76,7 +81,7 @@ def snap_upload(server_dst: str, filename: str, api_token: str):
     )
 
     # Check for a 400 response and handle specific error codes
-    if resp.status_code == 400 and resp.json().get("code") == "API_SNAPSHOT_CONFLICT":
+    if resp.status_code == HTTP_400_STATUS and resp.json().get("code") == "API_SNAPSHOT_CONFLICT":
         snapshot_id = resp.json().get("data", {}).get("snapshot")
         print(f"SNAPSHOT ID {snapshot_id} already uploaded")
         return
@@ -91,7 +96,7 @@ def main(
     snapshot_src: str = typer.Option("$last", "--snapshot", "-s", help="Snapshot ID to copy"),
     server_src: str = typer.Option(os.getenv("IPF_URL_DOWNLOAD"), "--source", "-src", help="IPF Server Source"),
     auth_src: str = typer.Option(
-        os.getenv("IPF_AUTH_DOWNLOAD", ("admin", os.getenv("IPF_USER_PWD"))),
+        os.getenv("IPF_AUTH_DOWNLOAD"),
         "--auth-source",
         "-auth-src",
         help="API Token for Server Source, or use \"('user', 'password')\"",
@@ -103,7 +108,7 @@ def main(
         help="IPF Server Destination",
     ),
     auth_dst: str = typer.Option(
-        os.getenv("IPF_AUTH_UPLOAD", os.getenv("IPF_TOKEN_TS")),
+        os.getenv("IPF_AUTH_UPLOAD"),
         "--auth-destination",
         "-auth-dst",
         help="Token for Server Destination, or use \"('user', 'password')\"",
@@ -116,10 +121,10 @@ def main(
         help="Timeout in seconds for each checks during download",
     ),
 ):
-    """
-    Copy a snapshot from one IPF server to another.
+    """Copy a snapshot from one IPF server to another.
 
     Args:
+    ----
         snapshot_src (str): Snapshot ID to copy.
         server_src (str): IPF Server Source.
         auth_src (str): API Token for Server Source, or "('user', 'password')".
@@ -129,9 +134,11 @@ def main(
         dl_check_timeout (int): Timeout to download the Snapshot.
 
     Returns:
+    -------
         None
 
     Raises:
+    ------
         None
 
     """
@@ -148,9 +155,14 @@ def main(
         retry=JOB_CHECK_LOOP, timeout=dl_check_timeout
     )  # retry X timeout = max waiting time
     if not download_path:
-        logger.error(
-            f"Could not download the file - maybe: job did not finish within {dl_check_timeout*JOB_CHECK_LOOP} seconds?"
-        )
+        logger.error("Could not download the file - let's try again")
+        time.sleep(dl_check_timeout)
+        download_path = snapshot.download(retry=JOB_CHECK_LOOP, timeout=dl_check_timeout)
+        if not download_path:
+            logger.error(
+                f"""Could not download the file again...
+                maybe the job did not finish within {dl_check_timeout*JOB_CHECK_LOOP} seconds?"""
+            )
         sys.exit()
     logger.info(f"✅ Download completed | file: {download_path.absolute()}")
 
@@ -159,7 +171,7 @@ def main(
         try:
             logger.info(f"Initiating upload to {server_dst}...")
             upload_snap_id = snap_upload(server_dst=server_dst, filename=download_path, api_token=parse_auth(auth_dst))
-            logger.info("✅ Upload initiated")
+            logger.info("✅ Upload snapshot to the server completed.")
             logger.info(
                 f"DESTINATION | server: {server_dst}, snapshot name {snapshot.name}, new snap_id: {upload_snap_id}"
             )
@@ -174,7 +186,7 @@ def main(
         logger.info(f"File `{download_path}` deleted")
 
     if upload_file:
-        logger.info("⏳ Loading snapshot... script is done, but the snapshot is still loading.")
+        logger.info("⏳ Loading in progress... script is done, but the snapshot is still loading.")
 
 
 if __name__ == "__main__":
