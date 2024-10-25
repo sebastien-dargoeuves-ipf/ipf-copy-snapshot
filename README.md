@@ -18,9 +18,9 @@ python copy-snapshot.py [OPTIONS]
 
 - -s, --snapshot: Snapshot ID to move (default: $last).
 - -src, --source: IPF Server Source (default from .env).
-- -api-src, --api-source: API Token for Server Source (default from .env).
+- -auth-src, --api-source: API Token for Server Source (default from .env), or you can use "('user', 'password')".
 - -dst, --destination: IPF Server Destination (default from .env).
-- -api-dst, --api-destination: Token for Server Destination (default from .env).
+- -auth-dst, --api-destination: Token for Server Destination (default from .env), or you can use "('user', 'password')".
 - -k, --keep: Keep the downloaded snapshot (default: False).
 - -t, --timeout: imeout in seconds for each checks during download (default: 5 seconds).
 
@@ -29,13 +29,13 @@ python copy-snapshot.py [OPTIONS]
 The script uses the following environment variables, which should be defined in a `.env` file:
 
 - `IPF_URL_DOWNLOAD`: The URL of the SOURCE IP Fabric instance, where the snapshot will be copied FROM.
-- `IPF_TOKEN_DOWNLOAD`: The authentication token for the SOURCE IP Fabric.
+- `IPF_AUTH_DOWNLOAD`: The authentication token for the SOURCE IP Fabric.
 - `IPF_URL_UPLOAD`: The URL of the DESTINATION IP Fabric instance, where the snapshot will be copied TO.
-- `IPF_TOKEN_UPLOAD`: The authentication token for the DESTINATION IP Fabric.
+- `IPF_AUTH_UPLOAD`: The authentication token for the DESTINATION IP Fabric.
 
 ## Examples
 
-- Copy the last snapshot:
+- Copy the `$last` snapshot:
 
     ```shell
     python3 copy-snapshot.py
@@ -50,7 +50,7 @@ The script uses the following environment variables, which should be defined in 
 - Without the Environment variables specified in the .env file:
 
     ```shell
-    python3 copy-snapshot.py -src https://ipfabric.source-server -api-src <api-src-token> -dst https://ipfabric.dst-server -api-dst <api-dst-token> -s <snapshot-id>
+    python3 copy-snapshot.py -src "https://ipfabric.source-server" -auth-src "<api-src-token>" -s "<snapshot-source-id>" -dst "https://ipfabric.dst-server" -auth-dst "('user', 'password')"
     ```
 
 ## Logging
