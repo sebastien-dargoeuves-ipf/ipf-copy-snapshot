@@ -151,6 +151,7 @@ def main(
     ][0]
 
     logger.info(f"SOURCE | server: {server_src}, snapshot name: {snapshot.name}, id: {snapshot.snapshot_id}")
+    logger.info("🔄 Downloading in progress...")
     download_path = snapshot.download(
         retry=JOB_CHECK_LOOP, timeout=dl_check_timeout
     )  # retry X timeout = max waiting time
@@ -183,7 +184,7 @@ def main(
                 sys.exit()
     if not keep_dl_file:
         download_path.unlink()
-        logger.info(f"File `{download_path}` deleted")
+        logger.info(f"File `{download_path.absolute()}` deleted")
 
     if upload_file:
         logger.info("⏳ Loading in progress... script is done, but the snapshot is still loading.")
