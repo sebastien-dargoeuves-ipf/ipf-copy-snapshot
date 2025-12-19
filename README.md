@@ -22,7 +22,8 @@ python copy-snapshot.py [OPTIONS]
 - -dst, --destination: IPF Server Destination (default from .env).
 - -auth-dst, --api-destination: Token for Server Destination (default from .env), or you can use "('user', 'password')".
 - -k, --keep: Keep the downloaded snapshot (default: False).
-- -t, --timeout: imeout in seconds for each checks during download (default: 5 seconds).
+- -t, --timeout: Timeout in seconds for each checks during download (default: 5 seconds).
+- -i, --interactive: Interactive mode to select and copy multiple snapshots (default: False).
 
 ## Environment Variables
 
@@ -47,10 +48,27 @@ The script uses the following environment variables, which should be defined in 
     python3 copy-snapshot.py -s <snapshot-id>
     ```
 
+- Interactive mode to select and copy multiple snapshots:
+
+    ```shell
+    python3 copy-snapshot.py -i
+    ```
+    
+    This will display a table of available snapshots with their names and dates. You can then select multiple snapshots using:
+    - Individual selections: `1,3,5`
+    - Range selections: `1-3,5-7`
+    - Mixed: `1,3-5,7`
+
 - Without the Environment variables specified in the .env file:
 
     ```shell
     python3 copy-snapshot.py -src "https://ipfabric.source-server" -auth-src "<api-src-token>" -s "<snapshot-source-id>" -dst "https://ipfabric.dst-server" -auth-dst "('user', 'password')"
+    ```
+
+- Interactive mode with custom servers:
+
+    ```shell
+    python3 copy-snapshot.py -i -src "https://ipfabric.source-server" -auth-src "<api-src-token>" -dst "https://ipfabric.dst-server" -auth-dst "('user', 'password')"
     ```
 
 ## Logging
