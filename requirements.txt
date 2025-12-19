@@ -1,4 +1,3 @@
 ipfabric
 loguru
-python3-dotenv
 typer
