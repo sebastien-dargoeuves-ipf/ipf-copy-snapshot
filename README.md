@@ -1,4 +1,4 @@
-# IP Fabric Snapshot Copier  🚚
+# IP Fabric Snapshot Copier 🚚
 
 A Python script to copy snapshots between IP Fabric servers.
 

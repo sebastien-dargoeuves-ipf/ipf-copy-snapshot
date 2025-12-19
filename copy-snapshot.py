@@ -1,7 +1,10 @@
 import ast
+import inspect
+import logging
 import os
+import re
 import sys
-import time
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -9,36 +12,32 @@ import typer
 from dotenv import find_dotenv, load_dotenv
 from ipfabric import IPFClient
 from loguru import logger
+from rich.console import Console
+from rich.table import Table
+
+load_dotenv(find_dotenv(), override=True)
 
 # Get Current Path
 CURRENT_FOLDER = Path(os.path.realpath(os.path.dirname(__file__)))
 
-load_dotenv(find_dotenv(), override=True)
-
-JOB_CHECK_LOOP = 60
+JOB_CHECK_LOOP = 30
 DEFAULT_TIMEOUT = 5
 LOG_FILE = CURRENT_FOLDER / "logs/ipf-mv-snap.log"
-LOGGER_FORMAT = (
-    "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
-    "<yellow><italic>{elapsed}</italic></yellow> | "
-    "<level>{level: <8}</level> | <level>{message}</level>"
-)
 HTTP_400_STATUS = 400
-
 
 logger.remove()
 logger.add(
     sys.stderr,
     colorize=True,
     level="INFO",
-    format=LOGGER_FORMAT,
+    # format=LOGGER_FORMAT,
     diagnose=False,
 )
 logger.add(
     LOG_FILE,
     colorize=True,
     level="DEBUG",
-    format=LOGGER_FORMAT,
+    # format=LOGGER_FORMAT,
     diagnose=False,
     rotation="1 MB",
     compression="bz2",
@@ -46,7 +45,121 @@ logger.add(
 )
 logger.info("-------------- STARTING SCRIPT --------------")
 
+class InterceptHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        # Get corresponding Loguru level if it exists.
+        level: str | int
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+
+        # Find caller from where originated the logged message.
+        frame, depth = inspect.currentframe(), 0
+        while frame and (depth == 0 or frame.f_code.co_filename == logging.__file__):
+            frame = frame.f_back
+            depth += 1
+
+        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+
+logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
+
 app = typer.Typer(add_completion=False)
+console = Console()
+
+
+def parse_selection(selection: str, max_index: int) -> list[int]:
+    """
+    Parse a selection string like '1,3,5' or '1-3,5,7-9' into a list of indices.
+    Returns 0-based indices.
+    """
+    indices = set()
+    parts = selection.replace(" ", "").split(",")
+    for part in parts:
+        if "-" in part:
+            match = re.match(r"(\d+)-(\d+)", part)
+            if match:
+                start, end = int(match.group(1)), int(match.group(2))
+                for i in range(start, end + 1):
+                    if 1 <= i <= max_index:
+                        indices.add(i - 1)  # Convert to 0-based
+        elif part.isdigit():
+            idx = int(part)
+            if 1 <= idx <= max_index:
+                indices.add(idx - 1)  # Convert to 0-based
+    return sorted(indices)
+
+
+def display_snapshots(snapshots: list) -> None:
+    """Display snapshots in a formatted table."""
+    table = Table(title="Available Snapshots")
+    table.add_column("#", style="cyan", justify="right")
+    table.add_column("Name", style="green")
+    table.add_column("Date", style="yellow")
+    table.add_column("Snapshot ID", style="magenta")
+
+    for idx, snap in enumerate(snapshots, 1):
+        # Try to get the date - could be start, end, or creation timestamp
+        snap_date = ""
+        if hasattr(snap, "start") and snap.start:
+            # Handle both datetime objects and timestamps
+            if isinstance(snap.start, datetime):
+                snap_date = snap.start.strftime("%Y-%m-%d %H:%M")
+            else:
+                snap_date = datetime.fromtimestamp(snap.start / 1000).strftime("%Y-%m-%d %H:%M")
+        elif hasattr(snap, "end") and snap.end:
+            if isinstance(snap.end, datetime):
+                snap_date = snap.end.strftime("%Y-%m-%d %H:%M")
+            else:
+                snap_date = datetime.fromtimestamp(snap.end / 1000).strftime("%Y-%m-%d %H:%M")
+
+        table.add_row(str(idx), snap.name or "N/A", snap_date or "N/A", snap.snapshot_id)
+
+    console.print(table)
+
+
+def copy_single_snapshot(
+    snapshot,
+    server_src: str,
+    server_dst: str,
+    auth_dst: str,
+    keep_dl_file: bool,
+    dl_check_timeout: int,
+) -> tuple[bool, str]:
+    """
+    Copy a single snapshot from source to destination.
+    Returns (success: bool, error_message: str).
+    """
+    try:
+        logger.info(f"SOURCE | server: {server_src}, snapshot name: {snapshot.name}, id: {snapshot.snapshot_id}")
+        logger.info("🔄 Downloading in progress...")
+        download_path = snapshot.download(retry=JOB_CHECK_LOOP, timeout=dl_check_timeout)
+        logger.info(f"✅ Download completed | file: {download_path.absolute()}")
+
+        # Upload the snapshot
+        try:
+            logger.info(f"Initiating upload to {server_dst}...")
+            upload_snap_id = snap_upload(server_dst=server_dst, filename=download_path, api_token=parse_auth(auth_dst))
+            logger.info("✅ Upload snapshot to the server completed.")
+            logger.info(
+                f"DESTINATION | server: {server_dst}, snapshot name {snapshot.name}, new snap_id: {upload_snap_id}"
+            )
+        except Exception as exc:
+            logger.error(f"Could not upload the file: {exc}")
+            if not keep_dl_file:
+                download_path.unlink()
+                logger.warning("Deleting the file, as `keep_dl_file` is False.")
+            return False, f"Upload failed: {exc}"
+
+        if not keep_dl_file:
+            download_path.unlink()
+            logger.info(f"File `{download_path.absolute()}` deleted")
+
+        return True, ""
+
+    except Exception as exc:
+        logger.error(f"Error processing snapshot {snapshot.snapshot_id}: {exc}")
+        return False, str(exc)
 
 
 def parse_auth(auth):
@@ -120,6 +233,7 @@ def main(
         "-t",
         help="Timeout in seconds for each checks during download",
     ),
+    interactive: bool = typer.Option(False, "--interactive", "-i", help="Interactive mode to select multiple snapshots"),
 ):
     """Copy a snapshot from one IPF server to another.
 
@@ -132,6 +246,7 @@ def main(
         auth_dst (str): Token for Server Destination, or "('user', 'password')".
         keep_dl_file (bool): Keep the Downloaded Snapshot.
         dl_check_timeout (int): Timeout to download the Snapshot.
+        interactive (bool): Interactive mode to select multiple snapshots.
 
     Returns:
     -------
@@ -142,8 +257,82 @@ def main(
         None
 
     """
-    upload_file = True
     ipf_download = IPFClient(base_url=server_src, auth=parse_auth(auth_src), verify=False, unloaded=True)
+
+    # Interactive mode: display snapshots and let user select
+    if interactive:
+        # Get all snapshots and sort by date (newest first)
+        all_snapshots = list(ipf_download.snapshots.values())
+        all_snapshots.sort(key=lambda s: s.start if hasattr(s, "start") and s.start else datetime.min, reverse=True)
+
+        if not all_snapshots:
+            logger.error("No snapshots found on the source server.")
+            raise typer.Exit(1)
+
+        console.print(f"\n[bold]Source server:[/bold] {server_src}\n")
+        display_snapshots(all_snapshots)
+
+        # Prompt for selection
+        console.print("\n[bold]Enter snapshot numbers to copy[/bold] (e.g., 1,3,5 or 1-3,5-7):")
+        selection = typer.prompt("Selection")
+
+        selected_indices = parse_selection(selection, len(all_snapshots))
+
+        if not selected_indices:
+            logger.error("No valid snapshots selected.")
+            raise typer.Exit(1)
+
+        selected_snapshots = [all_snapshots[i] for i in selected_indices]
+
+        # Confirmation
+        console.print("\n[bold yellow]You selected the following snapshots:[/bold yellow]")
+        for snap in selected_snapshots:
+            console.print(f"  • {snap.name} ({snap.snapshot_id})")
+
+        console.print(f"\n[bold]Destination server:[/bold] {server_dst}")
+        if not typer.confirm("\nProceed with copying these snapshots?"):
+            logger.info("Operation cancelled by user.")
+            raise typer.Exit(0)
+
+        # Process each snapshot
+        results = {"success": [], "failed": []}
+
+        for idx, snapshot in enumerate(selected_snapshots, 1):
+            console.print(f"\n[bold cyan]Processing snapshot {idx}/{len(selected_snapshots)}:[/bold cyan] {snapshot.name}")
+            success, error = copy_single_snapshot(
+                snapshot=snapshot,
+                server_src=server_src,
+                server_dst=server_dst,
+                auth_dst=auth_dst,
+                keep_dl_file=keep_dl_file,
+                dl_check_timeout=dl_check_timeout,
+            )
+            if success:
+                results["success"].append(snapshot)
+            else:
+                results["failed"].append((snapshot, error))
+
+        # Summary report
+        console.print("\n" + "=" * 60)
+        console.print("[bold]COPY SUMMARY[/bold]")
+        console.print("=" * 60)
+
+        if results["success"]:
+            console.print(f"\n[bold green]✅ Successfully copied ({len(results['success'])}):[/bold green]")
+            for snap in results["success"]:
+                console.print(f"   • {snap.name} ({snap.snapshot_id})")
+
+        if results["failed"]:
+            console.print(f"\n[bold red]❌ Failed ({len(results['failed'])}):[/bold red]")
+            for snap, error in results["failed"]:
+                console.print(f"   • {snap.name} ({snap.snapshot_id}): {error}")
+
+        console.print("\n" + "=" * 60)
+        logger.info("⏳ Loading in progress... script is done, but snapshots may still be loading.")
+        return
+
+    # Non-interactive mode: original behavior
+    upload_file = True
     snapshot = [
         snap
         for snap in ipf_download.snapshots.values()
@@ -152,19 +341,17 @@ def main(
 
     logger.info(f"SOURCE | server: {server_src}, snapshot name: {snapshot.name}, id: {snapshot.snapshot_id}")
     logger.info("🔄 Downloading in progress...")
-    download_path = snapshot.download(
-        retry=JOB_CHECK_LOOP, timeout=dl_check_timeout
-    )  # retry X timeout = max waiting time
-    if not download_path:
-        logger.error("Could not download the file - let's try again")
-        time.sleep(dl_check_timeout)
-        download_path = snapshot.download(retry=JOB_CHECK_LOOP, timeout=dl_check_timeout)
-        if not download_path:
-            logger.error(
-                f"""Could not download the file again...
-                maybe the job did not finish within {dl_check_timeout*JOB_CHECK_LOOP} seconds?"""
-            )
-        sys.exit()
+    download_path = snapshot.download(retry=JOB_CHECK_LOOP, timeout=dl_check_timeout)
+    # if not download_path:
+    #     logger.error("Could not download the file - let's try again")
+    #     time.sleep(dl_check_timeout)
+    #     download_path = snapshot.download(retry=JOB_CHECK_LOOP, timeout=dl_check_timeout)
+    #     if not download_path:
+    #         logger.error(
+    #             f"""Could not download the file again...
+    #             maybe the job did not finish within {dl_check_timeout*JOB_CHECK_LOOP} seconds?"""
+    #         )
+    #     sys.exit()
     logger.info(f"✅ Download completed | file: {download_path.absolute()}")
 
     # Upload the DL snapshot without using the IPFClient, so we can use different versions of the API
