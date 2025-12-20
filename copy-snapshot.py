@@ -22,6 +22,7 @@ CURRENT_FOLDER = Path(os.path.realpath(os.path.dirname(__file__)))
 
 JOB_CHECK_LOOP = 30
 DEFAULT_TIMEOUT = 5
+DEFAULT_UPLOAD_TIMEOUT = 180  # timeout for uploading the snapshot
 LOG_FILE = CURRENT_FOLDER / "logs/ipf-mv-snap.log"
 HTTP_400_STATUS = 400
 
@@ -125,6 +126,7 @@ def copy_single_snapshot(
     auth_dst: str,
     keep_dl_file: bool,
     dl_check_timeout: int,
+    upload_timeout: int = None,
 ) -> tuple[bool, str]:
     """
     Copy a single snapshot from source to destination.
@@ -134,12 +136,18 @@ def copy_single_snapshot(
         logger.info(f"SOURCE | server: {server_src}, snapshot name: {snapshot.name}, id: {snapshot.snapshot_id}")
         logger.info("🔄 Downloading in progress...")
         download_path = snapshot.download(retry=JOB_CHECK_LOOP, timeout=dl_check_timeout)
+        
+        if not download_path:
+            error_msg = f"Download failed or timed out (total timeout: ~{JOB_CHECK_LOOP * dl_check_timeout}s)"
+            logger.error(error_msg)
+            return False, error_msg
+        
         logger.info(f"✅ Download completed | file: {download_path.absolute()}")
 
         # Upload the snapshot
         try:
             logger.info(f"Initiating upload to {server_dst}...")
-            upload_snap_id = snap_upload(server_dst=server_dst, filename=download_path, api_token=parse_auth(auth_dst))
+            upload_snap_id = snap_upload(server_dst=server_dst, filename=download_path, api_token=parse_auth(auth_dst), upload_timeout=upload_timeout)
             logger.info("✅ Upload snapshot to the server completed.")
             logger.info(
                 f"DESTINATION | server: {server_dst}, snapshot name {snapshot.name}, new snap_id: {upload_snap_id}"
@@ -179,18 +187,18 @@ def parse_auth(auth):
         return auth
 
 
-def snap_upload(server_dst: str, filename: str, api_token: str):
+def snap_upload(server_dst: str, filename: str, api_token: str, upload_timeout: int = None):
     """Upload a snapshot to an IPF server."""
     # Prepare the file to be uploaded
     file_data = {"file": (Path(filename).name, open(filename, "rb"), "application/x-tar")}
     headers = {"x-api-token": api_token}
     # Get the API version
-    get_api_version = httpx.get(f"{server_dst}/api/version", verify=False)
+    get_api_version = httpx.get(f"{server_dst}/api/version", verify=False, timeout=upload_timeout)
     get_api_version.raise_for_status()
     api_version = get_api_version.json().get("apiVersion")
     # Make the POST request to upload the file
     resp = httpx.post(
-        f"{server_dst}/api/{api_version}/snapshots/upload", files=file_data, headers=headers, verify=False
+        f"{server_dst}/api/{api_version}/snapshots/upload", files=file_data, headers=headers, verify=False, timeout=upload_timeout
     )
 
     # Check for a 400 response and handle specific error codes
@@ -207,12 +215,19 @@ def snap_upload(server_dst: str, filename: str, api_token: str):
 @app.command()
 def main(
     snapshot_src: str = typer.Option("$last", "--snapshot", "-s", help="Snapshot ID to copy"),
-    server_src: str = typer.Option(os.getenv("IPF_URL_DOWNLOAD"), "--source", "-src", help="IPF Server Source"),
+    server_src: str = typer.Option(
+        os.getenv("IPF_URL_DOWNLOAD"),
+        "--source",
+        "-src",
+        help="IPF Server Source",
+    ),
     auth_src: str = typer.Option(
-        os.getenv("IPF_AUTH_DOWNLOAD"),
+        None,
         "--auth-source",
         "-auth-src",
         help="API Token for Server Source, or use \"('user', 'password')\"",
+        envvar="IPF_AUTH_DOWNLOAD",
+        show_default=False,
     ),
     server_dst: str = typer.Option(
         os.getenv("IPF_URL_UPLOAD", os.getenv("IPF_URL_TS")),
@@ -221,10 +236,12 @@ def main(
         help="IPF Server Destination",
     ),
     auth_dst: str = typer.Option(
-        os.getenv("IPF_AUTH_UPLOAD"),
+        None,
         "--auth-destination",
         "-auth-dst",
         help="Token for Server Destination, or use \"('user', 'password')\"",
+        envvar="IPF_AUTH_UPLOAD",
+        show_default=False,
     ),
     keep_dl_file: bool = typer.Option(False, "--keep", "-k", help="Keep the Downloaded Snapshot"),
     dl_check_timeout: int = typer.Option(
@@ -232,6 +249,12 @@ def main(
         "--timeout",
         "-t",
         help="Timeout in seconds for each checks during download",
+    ),
+    upload_timeout: int = typer.Option(
+        DEFAULT_UPLOAD_TIMEOUT,
+        "--upload-timeout",
+        "-ut",
+        help="Timeout in seconds for upload requests",
     ),
     interactive: bool = typer.Option(False, "--interactive", "-i", help="Interactive mode to select multiple snapshots"),
 ):
@@ -246,6 +269,7 @@ def main(
         auth_dst (str): Token for Server Destination, or "('user', 'password')".
         keep_dl_file (bool): Keep the Downloaded Snapshot.
         dl_check_timeout (int): Timeout to download the Snapshot.
+        upload_timeout (int): Timeout for upload requests.
         interactive (bool): Interactive mode to select multiple snapshots.
 
     Returns:
@@ -306,6 +330,7 @@ def main(
                 auth_dst=auth_dst,
                 keep_dl_file=keep_dl_file,
                 dl_check_timeout=dl_check_timeout,
+                upload_timeout=upload_timeout,
             )
             if success:
                 results["success"].append(snapshot)
@@ -342,23 +367,19 @@ def main(
     logger.info(f"SOURCE | server: {server_src}, snapshot name: {snapshot.name}, id: {snapshot.snapshot_id}")
     logger.info("🔄 Downloading in progress...")
     download_path = snapshot.download(retry=JOB_CHECK_LOOP, timeout=dl_check_timeout)
-    # if not download_path:
-    #     logger.error("Could not download the file - let's try again")
-    #     time.sleep(dl_check_timeout)
-    #     download_path = snapshot.download(retry=JOB_CHECK_LOOP, timeout=dl_check_timeout)
-    #     if not download_path:
-    #         logger.error(
-    #             f"""Could not download the file again...
-    #             maybe the job did not finish within {dl_check_timeout*JOB_CHECK_LOOP} seconds?"""
-    #         )
-    #     sys.exit()
+    
+    if not download_path:
+        logger.error(f"Could not download the file (total timeout: ~{JOB_CHECK_LOOP * dl_check_timeout}s)")
+        logger.warning("Try increasing the timeout with -t option. E.g., -t 10 or -t 15")
+        sys.exit()
+    
     logger.info(f"✅ Download completed | file: {download_path.absolute()}")
 
     # Upload the DL snapshot without using the IPFClient, so we can use different versions of the API
     if upload_file:
         try:
             logger.info(f"Initiating upload to {server_dst}...")
-            upload_snap_id = snap_upload(server_dst=server_dst, filename=download_path, api_token=parse_auth(auth_dst))
+            upload_snap_id = snap_upload(server_dst=server_dst, filename=download_path, api_token=parse_auth(auth_dst), upload_timeout=upload_timeout)
             logger.info("✅ Upload snapshot to the server completed.")
             logger.info(
                 f"DESTINATION | server: {server_dst}, snapshot name {snapshot.name}, new snap_id: {upload_snap_id}"
